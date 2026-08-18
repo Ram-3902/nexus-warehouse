@@ -10,6 +10,7 @@ import { toast } from 'sonner';
 import { 
   ClipboardList, Play, Check, ShieldAlert, ArrowRightLeft, RefreshCw 
 } from 'lucide-react';
+import { formatSLATimer } from '../lib/warehouseUtils';
 
 export default function Orders() {
   const [dbOrders, setDbOrders] = useState<Order[]>(() => supabase.getOrders());
@@ -311,7 +312,13 @@ export default function Orders() {
                 <CardHeader className="pb-3 border-b border-slate-800">
                   <div className="flex justify-between items-center">
                     <CardTitle className="text-sm font-semibold">Order Detail: {selectedOrder.id}</CardTitle>
-                    <span className="text-[10px] text-slate-500">Created {new Date(selectedOrder.createdAt).toLocaleTimeString()}</span>
+                    <div className="text-right space-y-1">
+                      <div className="text-[10px] text-slate-500">Created {new Date(selectedOrder.createdAt).toLocaleTimeString()}</div>
+                      {(() => {
+                        const sla = formatSLATimer(selectedOrder.createdAt);
+                        return <span className={`text-[9px] font-mono inline-block ${sla.style}`}>{sla.remaining}</span>;
+                      })()}
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent className="pt-4 space-y-4 text-xs">

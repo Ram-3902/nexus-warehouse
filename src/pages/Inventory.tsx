@@ -10,8 +10,10 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { 
-  Search, ArrowUpDown, Plus, MapPin, Box 
+  Search, ArrowUpDown, Plus, MapPin, Box, Download 
 } from 'lucide-react';
+import useDebounce from '../hooks/useDebounce';
+import { sanitizeInput, escapeCSVCell } from '../lib/warehouseUtils';
 
 // Zod Validation Schema for Stock Movement
 const movementSchema = z.object({
@@ -29,7 +31,8 @@ type MovementFormValues = z.infer<typeof movementSchema>;
 
 export default function Inventory() {
   const [dbItems, setDbItems] = useState<WarehouseItem[]>(() => supabase.getItems());
-  const [search, setSearch] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const debouncedSearch = useDebounce(searchTerm, 300);
   const [selectedZone, setSelectedZone] = useState<string>('All');
   
   // Table Sorting
@@ -82,15 +85,15 @@ export default function Inventory() {
   // Filter and Sort Items
   const filteredSortedItems = useMemo(() => {
     let result = dbItems.filter(item => {
-      const matchSearch = item.sku.toLowerCase().includes(search.toLowerCase()) || 
-                          item.name.toLowerCase().includes(search.toLowerCase());
+      const matchSearch = item.sku.toLowerCase().includes(debouncedSearch.toLowerCase()) || 
+                          item.name.toLowerCase().includes(debouncedSearch.toLowerCase());
       const matchZone = selectedZone === 'All' || item.location.zone === selectedZone;
       return matchSearch && matchZone;
     });
 
     result.sort((a, b) => {
-      let valA: any = a[sortField];
-      let valB: any = b[sortField];
+      let valA = a[sortField];
+      let valB = b[sortField];
 
       // Handle nested location string representation for sorting
       if (sortField === 'location') {
@@ -99,14 +102,14 @@ export default function Inventory() {
       }
 
       if (typeof valA === 'string') {
-        return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        return sortAsc ? valA.localeCompare(valB as string) : (valB as string).localeCompare(valA);
       } else {
-        return sortAsc ? valA - valB : valB - valA;
+        return sortAsc ? (valA as number) - (valB as number) : (valB as number) - (valA as number);
       }
     });
 
     return result;
-  }, [dbItems, search, selectedZone, sortField, sortAsc]);
+  }, [dbItems, debouncedSearch, selectedZone, sortField, sortAsc]);
 
   // Paginated Items
   const paginatedItems = useMemo(() => {
@@ -116,9 +119,49 @@ export default function Inventory() {
 
   const totalPages = Math.ceil(filteredSortedItems.length / itemsPerPage) || 1;
 
+  // Safe CSV Exporter with Injection Protection (Additive Pass)
+  const handleExportCSV = () => {
+    try {
+      const headers = ['SKU', 'Product Name', 'Total Physical Stock', 'Allocated', 'Damaged', 'Missing', 'Low Stock', 'Location'];
+      
+      const rows = filteredSortedItems.map(item => {
+        const usable = item.totalStock - item.allocated - item.damaged - item.missing;
+        const isLow = usable < item.lowStockThreshold ? 'YES' : 'NO';
+        const locStr = `${item.location.zone} - ${item.location.rack} - ${item.location.shelf} - ${item.location.bin}`;
+        
+        return [
+          escapeCSVCell(item.sku),
+          escapeCSVCell(item.name),
+          String(item.totalStock),
+          String(item.allocated),
+          String(item.damaged),
+          String(item.missing),
+          isLow,
+          escapeCSVCell(locStr)
+        ];
+      });
+
+      const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `wareflow_inventory_${new Date().toISOString().split('T')[0]}.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      toast.success('Inventory report exported safely to CSV.');
+    } catch (err: any) {
+      toast.error('CSV Export failed: ' + err.message);
+    }
+  };
+
   // Submit Stock Movement Form
   const onSubmitMovement = (values: MovementFormValues) => {
     const user = supabase.getCurrentUser();
+    const sanitizedReason = sanitizeInput(values.reason);
     
     try {
       // Find the item
@@ -164,7 +207,7 @@ export default function Inventory() {
           type: 'inbound',
           quantity: values.quantity,
           toLocation: targetLoc,
-          reason: values.reason,
+          reason: sanitizedReason,
           user: user.name
         });
         toast.success(`Inbound stock logged successfully.`);
@@ -184,7 +227,7 @@ export default function Inventory() {
             quantity: values.quantity,
             fromLocation: item.location,
             toLocation: targetLoc,
-            reason: values.reason,
+            reason: sanitizedReason,
             user: user.name
           });
           toast.success(`Internal stock transfer logged.`);
@@ -210,7 +253,7 @@ export default function Inventory() {
             type: 'damaged',
             quantity: values.quantity,
             fromLocation: item.location,
-            reason: values.reason,
+            reason: sanitizedReason,
             user: user.name
           });
 
@@ -218,7 +261,7 @@ export default function Inventory() {
           supabase.insertException({
             sku: values.sku,
             type: 'damaged',
-            details: `DAMAGED STOCK: ${values.quantity} units reported by ${user.name}. Reason: ${values.reason}`,
+            details: `DAMAGED STOCK: ${values.quantity} units reported by ${user.name}. Reason: ${sanitizedReason}`,
             reportedBy: user.name
           });
 
@@ -239,7 +282,7 @@ export default function Inventory() {
             sku: values.sku,
             type: 'adjustment',
             quantity: values.quantity,
-            reason: `Audit stock count adjustment: ${values.reason}`,
+            reason: `Audit stock count adjustment: ${sanitizedReason}`,
             user: user.name
           });
           toast.success(`Stock level adjusted successfully.`);
@@ -306,18 +349,28 @@ export default function Inventory() {
         <Card className="border-slate-800 bg-slate-900/60 text-white backdrop-blur lg:col-span-2">
           <CardHeader className="pb-2 flex flex-row items-center justify-between">
             <CardTitle className="text-sm font-semibold">Inventory Items</CardTitle>
-            <div className="relative w-64">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
-              <Input
-                type="search"
-                placeholder="Search SKU or Name..."
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  setPage(1);
-                }}
-                className="pl-8 bg-slate-950 border-slate-850 h-9 text-xs text-white"
-              />
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={handleExportCSV}
+                size="sm"
+                variant="ghost"
+                className="text-slate-400 hover:text-white border border-slate-800 text-xs h-9 px-3 flex items-center gap-1.5"
+              >
+                <Download className="h-3.5 w-3.5" /> Export CSV
+              </Button>
+              <div className="relative w-64">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
+                <Input
+                  type="search"
+                  placeholder="Search SKU or Name..."
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    setPage(1);
+                  }}
+                  className="pl-8 bg-slate-950 border-slate-850 h-9 text-xs text-white"
+                />
+              </div>
             </div>
           </CardHeader>
           <CardContent>

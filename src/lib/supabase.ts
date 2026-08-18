@@ -8,6 +8,41 @@ import {
   type WarehouseUser
 } from '../types/warehouse';
 
+
+/**
+ * Runtime Type Guard to verify if an object matches the WarehouseItem interface structure.
+ */
+export function isWarehouseItem(obj: unknown): obj is WarehouseItem {
+  if (typeof obj !== 'object' || obj === null) return false;
+  const item = obj as WarehouseItem;
+  return (
+    typeof item.sku === 'string' &&
+    typeof item.name === 'string' &&
+    typeof item.totalStock === 'number' &&
+    typeof item.allocated === 'number' &&
+    typeof item.damaged === 'number' &&
+    typeof item.missing === 'number' &&
+    typeof item.lowStockThreshold === 'number' &&
+    typeof item.location === 'object' &&
+    item.location !== null
+  );
+}
+
+/**
+ * Runtime Type Guard to verify if an object matches the Order interface structure.
+ */
+export function isOrder(obj: unknown): obj is Order {
+  if (typeof obj !== 'object' || obj === null) return false;
+  const order = obj as Order;
+  return (
+    typeof order.id === 'string' &&
+    typeof order.status === 'string' &&
+    Array.isArray(order.items) &&
+    typeof order.priority === 'string' &&
+    typeof order.customerTier === 'string'
+  );
+}
+
 // Node-safe mock localStorage fallback
 const mockStorage: Record<string, string> = {};
 const storage = {
@@ -306,7 +341,7 @@ class SimulatedSupabaseClient {
   }
 
   // --- RLS CHECK UTILITY ---
-  private checkRLS(action: 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE', table: string, rowData?: any): boolean {
+  private checkRLS(action: 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE', table: string, rowData?: unknown): boolean {
     const user = this.getCurrentUser();
     const role = user.role;
 
@@ -323,11 +358,11 @@ class SimulatedSupabaseClient {
 
     // Role-specific UPDATE / INSERT policies
     if (table === 'orders') {
-      const order = rowData as Order;
-      if (!order) {
+      if (!isOrder(rowData)) {
         this.logSecurity(role, action, table, 'DENIED', `Attempted update on orders table without providing order payload.`);
         return false;
       }
+      const order = rowData;
 
       if (role === 'picker') {
         // Pickers can update orders only if status is 'allocated' or 'picking' (transitioning to picking or packing)
